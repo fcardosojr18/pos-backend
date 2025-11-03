@@ -33,6 +33,7 @@ type KdsOrder struct {
 func registerKDS(r *gin.Engine, pool *pgxpool.Pool) {
 	api := r.Group("/api/kds")
 
+	// GET: Retrieve active (not done) orders
 	api.GET("/orders", func(c *gin.Context) {
 		ctx := c.Request.Context()
 		orders := []KdsOrder{}
@@ -41,6 +42,7 @@ func registerKDS(r *gin.Engine, pool *pgxpool.Pool) {
 			SELECT id, order_number, table_name, customer_name,
 			       type, station, status, notes, created_at, bumped_at
 			FROM kds_orders
+			WHERE status IS NULL OR status NOT IN ('done', 'completed', 'bumped')
 			ORDER BY created_at ASC`)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
@@ -68,7 +70,7 @@ func registerKDS(r *gin.Engine, pool *pgxpool.Pool) {
 				&o.CreatedAt,
 				&o.BumpedAt,
 			); err != nil {
-				// bad row, skip it
+				// skip invalid row
 				continue
 			}
 
@@ -82,7 +84,7 @@ func registerKDS(r *gin.Engine, pool *pgxpool.Pool) {
 				o.Notes = notesNS.String
 			}
 
-			// fetch items
+			// fetch items for this order
 			itemRows, err := pool.Query(ctx, `
 				SELECT name, qty, mods, station
 				FROM kds_order_items
@@ -91,7 +93,6 @@ func registerKDS(r *gin.Engine, pool *pgxpool.Pool) {
 			if err == nil {
 				for itemRows.Next() {
 					var it KdsItem
-					// all item fields are NOT NULL in your test, so direct scan is fine
 					if err := itemRows.Scan(&it.Name, &it.Qty, &it.Mods, &it.Station); err == nil {
 						o.Items = append(o.Items, it)
 					}
@@ -102,7 +103,25 @@ func registerKDS(r *gin.Engine, pool *pgxpool.Pool) {
 			orders = append(orders, o)
 		}
 
-		// now we should have real rows, so just return them
 		c.JSON(http.StatusOK, orders)
+	})
+
+	// POST: Mark an order as done/bumped
+	api.POST("/orders/:id/bump", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		id := c.Param("id")
+		now := time.Now()
+
+		_, err := pool.Exec(ctx, `
+			UPDATE kds_orders
+			SET status = 'done', bumped_at = $1
+			WHERE id = $2
+		`, now, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+			return
+		}
+
+		c.Status(http.StatusNoContent)
 	})
 }
