@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -26,7 +27,10 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 
 	r.GET("", func(c *gin.Context) {
 		rows, err := pool.Query(c, `SELECT id, subtotal_cents, tax_cents, tip_cents, total_cents, status, created_at FROM orders ORDER BY id DESC LIMIT 100`)
-		if err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"db_query"}); return }
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_query"})
+			return
+		}
 		type order struct {
 			ID            int64     `json:"id"`
 			SubtotalCents int       `json:"subtotal_cents"`
@@ -40,7 +44,8 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 		for rows.Next() {
 			var o order
 			if err := rows.Scan(&o.ID, &o.SubtotalCents, &o.TaxCents, &o.TipCents, &o.TotalCents, &o.Status, &o.CreatedAt); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error":"scan"}); return
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan"})
+				return
 			}
 			out = append(out, o)
 		}
@@ -57,11 +62,18 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 		err := pool.QueryRow(c, `SELECT id, subtotal_cents, tax_cents, tip_cents, total_cents, status, created_at FROM orders WHERE id=$1`, id).
 			Scan(&o.ID, &o.Subtotal, &o.Tax, &o.Tip, &o.Total, &o.Status, &o.CreatedAt)
 		if err != nil {
-			if err == pgx.ErrNoRows { c.JSON(http.StatusNotFound, gin.H{"error":"not_found"}); return }
-			c.JSON(http.StatusInternalServerError, gin.H{"error":"db_query"}); return
+			if err == pgx.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_query"})
+			return
 		}
 		rows, err := pool.Query(c, `SELECT id, menu_item_id, quantity, price_cents, note, kitchen_status, created_at FROM order_items WHERE order_id=$1 ORDER BY id`, id)
-		if err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"db_query_items"}); return }
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_query_items"})
+			return
+		}
 		type item struct {
 			ID         int64     `json:"id"`
 			MenuItemID int64     `json:"menu_item_id"`
@@ -75,7 +87,8 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 		for rows.Next() {
 			var it item
 			if err := rows.Scan(&it.ID, &it.MenuItemID, &it.Quantity, &it.PriceCents, &it.Note, &it.Status, &it.CreatedAt); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error":"scan_items"}); return
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan_items"})
+				return
 			}
 			items = append(items, it)
 		}
@@ -94,28 +107,41 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 	r.POST("", func(c *gin.Context) {
 		var in CreateOrderInput
 		if err := c.ShouldBindJSON(&in); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error":"bad_request","message":err.Error()}); return
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request", "message": err.Error()})
+			return
 		}
 
 		// gather unique menu_item_ids
 		idSet := map[int64]struct{}{}
-		for _, it := range in.Items { idSet[it.MenuItemID] = struct{}{} }
+		for _, it := range in.Items {
+			idSet[it.MenuItemID] = struct{}{}
+		}
 		ids := make([]int64, 0, len(idSet))
-		for k := range idSet { ids = append(ids, k) }
+		for k := range idSet {
+			ids = append(ids, k)
+		}
 
 		// fetch prices
 		priceMap := map[int64]int{}
 		rows, err := pool.Query(c, `SELECT id, price_cents FROM menu_items WHERE id = ANY($1)`, ids)
-		if err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"price_query"}); return }
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "price_query"})
+			return
+		}
 		for rows.Next() {
-			var id int64; var price int
-			if err := rows.Scan(&id, &price); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"scan_price"}); return }
+			var id int64
+			var price int
+			if err := rows.Scan(&id, &price); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "scan_price"})
+				return
+			}
 			priceMap[id] = price
 		}
 		// validate all items exist
 		for _, it := range in.Items {
 			if _, ok := priceMap[it.MenuItemID]; !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"error":"unknown_menu_item","menu_item_id":it.MenuItemID}); return
+				c.JSON(http.StatusBadRequest, gin.H{"error": "unknown_menu_item", "menu_item_id": it.MenuItemID})
+				return
 			}
 		}
 
@@ -129,14 +155,19 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 
 		// transaction
 		tx, err := pool.Begin(c)
-		if err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"tx_begin"}); return }
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "tx_begin"})
+			return
+		}
 		defer tx.Rollback(c) // safe even if committed
 
 		var orderID int64
 		if err := tx.QueryRow(c,
-			`INSERT INTO orders (subtotal_cents, tax_cents, tip_cents, total_cents, status) VALUES ($1,$2,$3,$4,'open') RETURNING id`,
+			`INSERT INTO orders (subtotal_cents, tax_cents, tip_cents, total_cents, status)
+             VALUES ($1,$2,$3,$4,'open') RETURNING id`,
 			subtotal, tax, in.TipCents, total).Scan(&orderID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error":"insert_order"}); return
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "insert_order"})
+			return
 		}
 
 		batch := &pgx.Batch{}
@@ -148,18 +179,77 @@ func RegisterOrderRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 			)
 		}
 		br := tx.SendBatch(c, batch)
-		if err := br.Close(); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"insert_items"}); return }
+		if err := br.Close(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "insert_items"})
+			return
+		}
 
-		if err := tx.Commit(c); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"tx_commit"}); return }
+		// ======================
+		// ALSO WRITE TO KDS TABLES
+		// ======================
+		kdsID := fmt.Sprintf("%d", orderID) // kds_orders.id is TEXT
+		_, err = tx.Exec(c, `
+			INSERT INTO kds_orders (
+				id, order_number, table_name, customer_name,
+				type, station, status, notes
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		`,
+			kdsID,
+			kdsID,           // order_number
+			"",              // table_name (you can fill this later)
+			"",              // customer_name
+			"DINE_IN",       // type
+			"Expo",          // station
+			"NEW",           // status
+			"",              // notes
+		)
+		if err != nil {
+			// don't fail the order if KDS insert fails
+			// log if you want
+		} else {
+			for _, it := range in.Items {
+				// we don't have item names here, so show the menu_item_id
+				itemName := fmt.Sprintf("Menu #%d", it.MenuItemID)
+				_, _ = tx.Exec(c, `
+					INSERT INTO kds_order_items (order_id, name, qty, mods, station)
+					VALUES ($1,$2,$3,$4,$5)
+				`,
+					kdsID,
+					itemName,
+					it.Quantity,
+					[]string{},    // mods
+					"Expo",
+				)
+			}
+		}
 
-		c.JSON(http.StatusCreated, gin.H{"id": orderID, "subtotal_cents": subtotal, "tax_cents": tax, "tip_cents": in.TipCents, "total_cents": total, "status": "open"})
+		if err := tx.Commit(c); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "tx_commit"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"id":             orderID,
+			"subtotal_cents": subtotal,
+			"tax_cents":      tax,
+			"tip_cents":      in.TipCents,
+			"total_cents":    total,
+			"status":         "open",
+		})
 	})
 
 	r.POST("/:id/pay", func(c *gin.Context) {
 		id := c.Param("id")
 		ct, err := pool.Exec(c, `UPDATE orders SET status='paid' WHERE id=$1 AND status='open'`, id)
-		if err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error":"db_update"}); return }
-		if ct.RowsAffected() == 0 { c.JSON(http.StatusConflict, gin.H{"error":"not_open_or_not_found"}); return }
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_update"})
+			return
+		}
+		if ct.RowsAffected() == 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "not_open_or_not_found"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"id": id, "status": "paid"})
 	})
 }

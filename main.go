@@ -2,38 +2,43 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 
-	"pos-backend/api"
-	"pos-backend/internal/db"
-	"pos-backend/internal/middleware"
+	"pos-backend/api" // your module
 )
 
 func main() {
 	port := os.Getenv("PORT")
-	if port == "" { port = "8080" }
+	if port == "" {
+		port = "8080"
+	}
 
-	// DB
-	pool := db.Connect(context.Background())
-	defer db.Close()
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL not set")
+	}
+
+	// 👇 add this so we SEE what DB we're using
+	fmt.Println("KDS USING DATABASE_URL:", dbURL)
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer pool.Close()
 
 	r := gin.Default()
-	registerKDS(r)
 
-	r.Run(":" + port)
-	r.Use(middleware.CORS())
+	api.RegisterOrderRoutes(r.Group("/v1"), pool)
+	registerKDS(r, pool)
 
-	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
-
-	v1 := r.Group("/v1")
-	api.RegisterMenuRoutes(v1, pool)
-	api.RegisterOrderRoutes(v1, pool)
-	api.RegisterAuthRoutes(v1) // harmless stub
-	api.RegisterKitchenRoutes(v1, pool)
-	log.Printf("listening on :%s", port)
-	if err := r.Run(":" + port); err != nil { log.Fatal(err) }
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal(err)
+	}
 }
-
